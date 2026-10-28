@@ -10,6 +10,16 @@ public enum Scanner {
         ("Gemfile", "Bundler"),
     ]
 
+    static let composeFileNames: Set<String> = [
+        "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml",
+    ]
+
+    /// Dateien, an denen ein Projektordner erkannt wird – dort wird nach `.ddev/config.yaml` geschaut,
+    /// weil versteckte Ordner sonst übersprungen werden.
+    static let projectMarkerNames: Set<String> = [
+        "composer.json", "package.json", "go.mod", "Gemfile",
+    ]
+
     /// Pfade, in die nie hineingesucht wird (System, App-Daten, Papierkorb).
     static var excludedPaths: Set<String> {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -29,9 +39,12 @@ public enum Scanner {
 
     /// Durchläuft `roots` und meldet jeden Fund über `onFound`.
     /// `onProgress` wird gedrosselt mit der Zahl geprüfter Ordner und dem aktuellen Pfad aufgerufen.
+    /// Mit `collectDockerProjects` werden Compose-Dateien und DDEV-Projekte in `dockerProjects` gesammelt.
     public static func scan(
         roots: [URL],
         kinds: Set<FolderKind>,
+        collectDockerProjects: Bool = false,
+        dockerProjects: inout DockerProjectIndex,
         token: CancelToken,
         onFound: (FoundFolder) -> Void,
         onProgress: (Int, String) -> Void
@@ -40,6 +53,7 @@ public enum Scanner {
         let excluded = excludedPaths
         var visited = 0
         var seen = Set<String>()
+        var checkedForDDEV = Set<String>()
 
         for root in roots {
             guard let enumerator = FileManager.default.enumerator(
@@ -54,8 +68,15 @@ public enum Scanner {
                 if token.isCancelled { return }
 
                 guard let values = try? url.resourceValues(forKeys: Set(keys)),
-                      values.isDirectory == true, values.isSymbolicLink != true
+                      values.isSymbolicLink != true
                 else { continue }
+
+                if values.isDirectory != true {
+                    if collectDockerProjects {
+                        collectDockerFile(url, into: &dockerProjects, checkedForDDEV: &checkedForDDEV)
+                    }
+                    continue
+                }
 
                 visited += 1
                 if visited % 250 == 0 { onProgress(visited, url.path) }
@@ -86,6 +107,21 @@ public enum Scanner {
             }
         }
         onProgress(visited, "")
+    }
+
+    private static func collectDockerFile(_ url: URL, into index: inout DockerProjectIndex, checkedForDDEV: inout Set<String>) {
+        let name = url.lastPathComponent
+        if composeFileNames.contains(name) {
+            index.addComposeFile(url)
+        }
+        if composeFileNames.contains(name) || projectMarkerNames.contains(name) {
+            let project = url.deletingLastPathComponent()
+            guard checkedForDDEV.insert(project.path).inserted else { return }
+            let config = project.appendingPathComponent(".ddev/config.yaml")
+            if FileManager.default.fileExists(atPath: config.path) {
+                index.addDDEVConfig(config)
+            }
+        }
     }
 
     /// Belegter Speicherplatz eines Ordners in Bytes (inkl. versteckter Dateien).

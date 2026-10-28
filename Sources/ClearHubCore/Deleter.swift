@@ -9,8 +9,18 @@ public enum DeleteMode: String, CaseIterable, Identifiable, Sendable {
 
 public struct DeleteResult: Sendable {
     public var deleted: [URL] = []
+    public var deletedImages: [String] = []
     public var freedBytes: Int64 = 0
-    public var failures: [(url: URL, message: String)] = []
+    public var failures: [(name: String, message: String)] = []
+
+    public init() {}
+
+    public mutating func merge(_ other: DeleteResult) {
+        deleted += other.deleted
+        deletedImages += other.deletedImages
+        freedBytes += other.freedBytes
+        failures += other.failures
+    }
 }
 
 public enum Deleter {
@@ -21,7 +31,7 @@ public enum Deleter {
         for folder in folders {
             // Sicherheitsnetz: nur Ordner mit genau diesen Namen werden je angefasst.
             guard folder.url.lastPathComponent == folder.kind.rawValue else {
-                result.failures.append((folder.url, "Unerwarteter Ordnername – übersprungen."))
+                result.failures.append((folder.displayPath, "Unerwarteter Ordnername – übersprungen."))
                 continue
             }
             do {
@@ -32,7 +42,7 @@ public enum Deleter {
                 result.deleted.append(folder.url)
                 result.freedBytes += folder.size ?? 0
             } catch {
-                result.failures.append((folder.url, error.localizedDescription))
+                result.failures.append((folder.displayPath, error.localizedDescription))
             }
         }
         return result

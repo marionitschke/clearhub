@@ -29,6 +29,7 @@ public struct FoundFolder: Identifiable, Hashable, Sendable {
     public var projectURL: URL { url.deletingLastPathComponent() }
     public var projectName: String { projectURL.lastPathComponent }
     public var projectPath: String { (projectURL.path as NSString).abbreviatingWithTildeInPath }
+    public var displayPath: String { (url.path as NSString).abbreviatingWithTildeInPath }
 
     // Sortier-Schlüssel für die Tabelle (Optionals sind nicht Comparable).
     public var sizeSort: Int64 { size ?? -1 }

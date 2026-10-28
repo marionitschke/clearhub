@@ -32,7 +32,8 @@ final class ScannerTests: XCTestCase {
 
     private func scan(_ kinds: Set<FolderKind>) -> [FoundFolder] {
         var found: [FoundFolder] = []
-        Scanner.scan(roots: [root], kinds: kinds, token: CancelToken(), onFound: { found.append($0) }, onProgress: { _, _ in })
+        var projects = DockerProjectIndex()
+        Scanner.scan(roots: [root], kinds: kinds, dockerProjects: &projects, token: CancelToken(), onFound: { found.append($0) }, onProgress: { _, _ in })
         return found.sorted { $0.url.path < $1.url.path }
     }
 

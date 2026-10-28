@@ -15,11 +15,12 @@ struct ContentView: View {
             Divider()
             FooterBar(confirmDelete: $confirmDelete)
         }
-        .searchable(text: $model.searchText, placement: .toolbar, prompt: "Pfad filtern")
+        .searchable(text: $model.searchText, placement: .toolbar, prompt: model.section == .folders ? "Pfad filtern" : "Image filtern")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Picker("Typ", selection: $model.filter) {
-                    ForEach(KindFilter.allCases) { Text($0.rawValue).tag($0) }
+                Picker("Ansicht", selection: $model.section) {
+                    Text("Ordner (\(model.results.count))").tag(Section.folders)
+                    Text("Docker (\(model.dockerImages.count))").tag(Section.docker)
                 }
                 .pickerStyle(.segmented)
                 .fixedSize()
@@ -37,7 +38,7 @@ struct ContentView: View {
             Text(deleteMessage)
         }
         .alert(
-            "Einige Ordner konnten nicht gelöscht werden",
+            "Einige Einträge konnten nicht gelöscht werden",
             isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
         ) {
             Button("OK") { model.errorMessage = nil }
@@ -47,14 +48,27 @@ struct ContentView: View {
     }
 
     private var deleteTitle: String {
-        "\(model.checked.count) Ordner \(model.deleteMode == .trash ? "in den Papierkorb legen" : "endgültig löschen")?"
+        var parts: [String] = []
+        if !model.checked.isEmpty { parts.append("\(model.checked.count) Ordner") }
+        if !model.checkedImages.isEmpty { parts.append("\(model.checkedImages.count) Docker-Einträge") }
+        return parts.joined(separator: " und ") + " löschen?"
     }
 
     private var deleteMessage: String {
-        let size = model.checkedBytes.formattedBytes
-        return model.deleteMode == .trash
-            ? "\(size) werden in den Papierkorb verschoben. Abhängigkeiten lassen sich mit npm install / composer install wiederherstellen."
-            : "\(size) werden sofort und unwiderruflich gelöscht. Abhängigkeiten lassen sich mit npm install / composer install wiederherstellen."
+        var lines = ["Insgesamt \(model.checkedBytes.formattedBytes)."]
+        if !model.checked.isEmpty {
+            lines.append(model.deleteMode == .trash
+                ? "Ordner kommen in den Papierkorb. Wiederherstellen mit npm install / composer install."
+                : "Ordner werden sofort und unwiderruflich gelöscht. Wiederherstellen mit npm install / composer install.")
+        }
+        if !model.checkedImages.isEmpty {
+            lines.append("Docker-Images werden endgültig entfernt (kein Papierkorb) und beim nächsten Start neu gebaut bzw. gepullt.")
+            let projectImages = model.checkedDockerImages.filter { if case .project = $0.status { true } else { false } }
+            if !projectImages.isEmpty {
+                lines.append("⚠️ \(projectImages.count) davon gehören zu Projekten auf deiner Platte.")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -88,6 +102,8 @@ private struct ScanSettingsBar: View {
                     Toggle("node_modules/", isOn: $model.includeNodeModules)
                     Toggle("vendor/ (Composer, Go, Bundler)", isOn: $model.includeVendor)
                         .help("Nur vendor/-Ordner neben composer.json, go.mod oder Gemfile.")
+                    Toggle("Docker-Images", isOn: $model.includeDocker)
+                        .help("Images und Build-Cache prüfen. Compose- und DDEV-Projekte in den Suchorten werden zugeordnet.")
                 }
                 .toggleStyle(.checkbox)
                 .disabled(model.isScanning)
@@ -158,6 +174,12 @@ private struct ScanStatus: View {
                     .foregroundStyle(.secondary)
             }
             .help(model.currentPath)
+        } else if model.isLoadingDocker {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Docker wird abgefragt …")
+                    .foregroundStyle(.secondary)
+            }
         } else if model.pendingSizes > 0 {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -171,6 +193,17 @@ private struct ScanStatus: View {
 // MARK: - Ergebnisse
 
 private struct ResultsArea: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        switch model.section {
+        case .folders: FolderResultsArea()
+        case .docker: DockerResultsArea()
+        }
+    }
+}
+
+private struct FolderResultsArea: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
@@ -315,10 +348,15 @@ private struct FooterBar: View {
 
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                if model.checked.isEmpty {
-                    Text("\(model.results.count) Ordner gefunden · \(model.totalBytes.formattedBytes)")
+                if model.checkedCount == 0 {
+                    switch model.section {
+                    case .folders:
+                        Text("\(model.results.count) Ordner gefunden · \(model.totalBytes.formattedBytes)")
+                    case .docker:
+                        Text("\(model.dockerImages.count) Docker-Einträge · \(model.orphanedBytes.formattedBytes) verwaist")
+                    }
                 } else {
-                    Text("\(model.checked.count) ausgewählt · \(model.checkedBytes.formattedBytes)")
+                    Text("\(model.checkedCount) ausgewählt · \(model.checkedBytes.formattedBytes)")
                         .fontWeight(.semibold)
                 }
                 if let status = model.statusMessage {
@@ -331,13 +369,21 @@ private struct FooterBar: View {
 
             Spacer()
 
-            Button("Alle markieren") {
-                model.checked.formUnion(model.visibleResults.map(\.id))
+            switch model.section {
+            case .folders:
+                Button("Alle markieren") { model.checkAllVisible() }
+                    .disabled(model.visibleResults.isEmpty)
+            case .docker:
+                Button("Verwaiste markieren") { model.checkAllVisible() }
+                    .disabled(!model.visibleImages.contains { $0.status.isOrphaned })
+                    .help("Markiert dangling, verwaiste Images und den ungenutzten Build-Cache – keine Projekt-Images.")
             }
-            .disabled(model.visibleResults.isEmpty)
 
-            Button("Keine") { model.checked.removeAll() }
-                .disabled(model.checked.isEmpty)
+            Button("Keine") {
+                model.checked.removeAll()
+                model.checkedImages.removeAll()
+            }
+            .disabled(model.checkedCount == 0)
 
             Picker("", selection: $model.deleteMode) {
                 Text("In den Papierkorb").tag(DeleteMode.trash)
@@ -345,6 +391,7 @@ private struct FooterBar: View {
             }
             .labelsHidden()
             .fixedSize()
+            .help("Gilt für Ordner. Docker-Images werden immer endgültig entfernt.")
 
             Button(role: .destructive) {
                 confirmDelete = true
@@ -357,7 +404,7 @@ private struct FooterBar: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .disabled(model.checked.isEmpty || model.isScanning || model.isDeleting)
+            .disabled(model.checkedCount == 0 || model.isScanning || model.isDeleting)
             .keyboardShortcut(.delete, modifiers: .command)
         }
         .padding(.horizontal, 16)
