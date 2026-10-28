@@ -17,13 +17,22 @@ final class AppModel {
     // MARK: Einstellungen (persistiert)
 
     var roots: [URL] {
-        didSet { UserDefaults.standard.set(roots.map(\.path), forKey: "roots") }
+        didSet {
+            UserDefaults.standard.set(roots.map(\.path), forKey: "roots")
+            markSettingsChanged()
+        }
     }
     var includeNodeModules: Bool {
-        didSet { UserDefaults.standard.set(includeNodeModules, forKey: "includeNodeModules") }
+        didSet {
+            UserDefaults.standard.set(includeNodeModules, forKey: "includeNodeModules")
+            markSettingsChanged()
+        }
     }
     var includeVendor: Bool {
-        didSet { UserDefaults.standard.set(includeVendor, forKey: "includeVendor") }
+        didSet {
+            UserDefaults.standard.set(includeVendor, forKey: "includeVendor")
+            markSettingsChanged()
+        }
     }
     var deleteMode: DeleteMode {
         didSet { UserDefaults.standard.set(deleteMode.rawValue, forKey: "deleteMode") }
@@ -39,6 +48,8 @@ final class AppModel {
 
     var isScanning = false
     var hasScanned = false
+    /// Suchorte oder Typen wurden seit dem letzten Scan geändert – Ergebnisse sind veraltet.
+    var settingsChanged = false
     var scannedCount = 0
     var currentPath = ""
     var pendingSizes = 0
@@ -111,6 +122,10 @@ final class AppModel {
         }
     }
 
+    private func markSettingsChanged() {
+        if hasScanned { settingsChanged = true }
+    }
+
     func removeRoot(_ url: URL) {
         roots.removeAll { $0 == url }
     }
@@ -127,6 +142,7 @@ final class AppModel {
 
         results = []
         checked = []
+        settingsChanged = false
         statusMessage = nil
         scannedCount = 0
         currentPath = ""

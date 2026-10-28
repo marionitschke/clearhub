@@ -26,7 +26,7 @@ struct ClearHubApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Scan") {
-                Button(model.isScanning ? "Scan abbrechen" : "Scannen") {
+                Button(model.isScanning ? "Scan abbrechen" : (model.hasScanned ? "Erneut scannen" : "Scannen")) {
                     model.isScanning ? model.cancelScan() : model.startScan()
                 }
                 .keyboardShortcut("r")

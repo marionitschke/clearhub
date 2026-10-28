@@ -24,14 +24,6 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
             }
-            ToolbarItem(placement: .primaryAction) {
-                if model.isScanning {
-                    Button("Abbrechen", systemImage: "stop.fill") { model.cancelScan() }
-                } else {
-                    Button("Scannen", systemImage: "magnifyingglass") { model.startScan() }
-                        .disabled(!model.canScan)
-                }
-            }
         }
         .confirmationDialog(
             deleteTitle,
@@ -92,14 +84,17 @@ private struct ScanSettingsBar: View {
             HStack(spacing: 18) {
                 Text("Suchen nach:")
                     .foregroundStyle(.secondary)
-                Toggle("node_modules/", isOn: $model.includeNodeModules)
-                Toggle("vendor/ (Composer, Go, Bundler)", isOn: $model.includeVendor)
-                    .help("Nur vendor/-Ordner neben composer.json, go.mod oder Gemfile.")
+                Group {
+                    Toggle("node_modules/", isOn: $model.includeNodeModules)
+                    Toggle("vendor/ (Composer, Go, Bundler)", isOn: $model.includeVendor)
+                        .help("Nur vendor/-Ordner neben composer.json, go.mod oder Gemfile.")
+                }
+                .toggleStyle(.checkbox)
+                .disabled(model.isScanning)
                 Spacer()
                 ScanStatus()
+                ScanButton()
             }
-            .toggleStyle(.checkbox)
-            .disabled(model.isScanning)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -126,6 +121,28 @@ private struct RootChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(.quaternary, in: Capsule())
+    }
+}
+
+private struct ScanButton: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.isScanning {
+            Button("Abbrechen", systemImage: "stop.fill") { model.cancelScan() }
+        } else if model.settingsChanged {
+            // Suchorte/Typen geändert: Button hervorheben, damit der neue Scan nicht vergessen wird.
+            Button("Erneut scannen", systemImage: "arrow.clockwise") { model.startScan() }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canScan)
+                .help("Suchorte oder Typen wurden geändert – Ergebnisse sind veraltet.")
+        } else {
+            Button(model.hasScanned ? "Erneut scannen" : "Scannen",
+                   systemImage: model.hasScanned ? "arrow.clockwise" : "magnifyingglass") {
+                model.startScan()
+            }
+            .disabled(!model.canScan)
+        }
     }
 }
 
