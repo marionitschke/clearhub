@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>ClearHub</string>
+	<key>CFBundleDisplayName</key>
+	<string>ClearHub</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.clearhub</string>
+	<key>CFBundleExecutable</key>
+	<string>ClearHub</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>de</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>de</string>
+	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Findet und löscht node_modules, vendor und veraltete Docker-Images.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
+</dict>
+</plist>
