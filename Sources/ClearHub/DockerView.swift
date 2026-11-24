@@ -266,7 +266,7 @@ private struct VolumeTable: View {
     }
 }
 
-private struct StatusBadge: View {
+struct StatusBadge: View {
     let label: String
     let detail: String
     let help: String

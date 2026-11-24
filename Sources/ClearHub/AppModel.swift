@@ -6,6 +6,7 @@ enum Section: String, CaseIterable, Identifiable {
     case folders = "Ordner"
     case docker = "Images"
     case volumes = "Volumes"
+    case claude = "Claude"
 
     var id: String { rawValue }
 }
@@ -39,6 +40,12 @@ final class AppModel {
             markSettingsChanged()
         }
     }
+    var includeClaude: Bool {
+        didSet {
+            UserDefaults.standard.set(includeClaude, forKey: "includeClaude")
+            markSettingsChanged()
+        }
+    }
     var deleteMode: DeleteMode {
         didSet { UserDefaults.standard.set(deleteMode.rawValue, forKey: "deleteMode") }
     }
@@ -61,6 +68,11 @@ final class AppModel {
     var isLoadingDocker = false
     var dockerError: String?
 
+    var claudeItems: [ClaudeItem] = []
+    var checkedClaude: Set<String> = []
+    var claudeSortOrder = [KeyPathComparator(\ClaudeItem.statusSort), KeyPathComparator(\ClaudeItem.sizeSort, order: .reverse)]
+    var isLoadingClaude = false
+
     var isScanning = false
     var hasScanned = false
     /// Search locations or types changed since the last scan; the results are stale.
@@ -76,6 +88,9 @@ final class AppModel {
     private var scanToken: CancelToken?
     /// Counts Docker loads; only the latest one may show its result.
     private var dockerLoad = 0
+    /// Counts Claude loads; only the latest one may show its result.
+    private var claudeLoad = 0
+    private var claudeToken: CancelToken?
     /// Compose/DDEV projects from the last scan, for reloading after a deletion.
     private var dockerProjects = DockerProjectIndex()
     private let sizeQueue: OperationQueue = {
@@ -94,6 +109,8 @@ final class AppModel {
         includeNodeModules = defaults.object(forKey: "includeNodeModules") as? Bool ?? true
         includeVendor = defaults.object(forKey: "includeVendor") as? Bool ?? true
         includeDocker = defaults.object(forKey: "includeDocker") as? Bool ?? (Docker.findCLI() != nil)
+        includeClaude = defaults.object(forKey: "includeClaude") as? Bool
+            ?? Claude.isInstalled(home: FileManager.default.homeDirectoryForCurrentUser)
         deleteMode = DeleteMode(rawValue: defaults.string(forKey: "deleteMode") ?? "") ?? .trash
     }
 
@@ -130,21 +147,37 @@ final class AppModel {
             .sorted(using: volumeSortOrder)
     }
 
+    var visibleClaude: [ClaudeItem] {
+        let query = query
+        return claudeItems
+            .filter { item in
+                guard !query.isEmpty else { return true }
+                return item.name.lowercased().contains(query)
+                    || item.location.lowercased().contains(query)
+                    || item.statusDetail.lowercased().contains(query)
+            }
+            .sorted(using: claudeSortOrder)
+    }
+
     var checkedFolders: [FoundFolder] { results.filter { checked.contains($0.id) } }
     var checkedDockerImages: [DockerImage] { dockerImages.filter { checkedImages.contains($0.id) } }
     var checkedDockerVolumes: [DockerVolume] { dockerVolumes.filter { checkedVolumes.contains($0.id) } }
-    var checkedCount: Int { checked.count + checkedImages.count + checkedVolumes.count }
+    var checkedClaudeItems: [ClaudeItem] { claudeItems.filter { checkedClaude.contains($0.id) } }
+    var checkedCount: Int { checked.count + checkedImages.count + checkedVolumes.count + checkedClaude.count }
     var checkedBytes: Int64 {
         checkedFolders.reduce(0) { $0 + ($1.size ?? 0) }
             + checkedDockerImages.reduce(0) { $0 + $1.uniqueSize }
             + checkedDockerVolumes.reduce(0) { $0 + $1.size }
+            + checkedClaudeItems.reduce(0) { $0 + $1.size }
     }
     var totalBytes: Int64 { results.reduce(0) { $0 + ($1.size ?? 0) } }
     var dockerBytes: Int64 { dockerImages.reduce(0) { $0 + $1.uniqueSize } }
     var orphanedBytes: Int64 { dockerImages.filter(\.status.isOrphaned).reduce(0) { $0 + $1.uniqueSize } }
     var orphanedVolumeBytes: Int64 { dockerVolumes.filter(\.status.isOrphaned).reduce(0) { $0 + $1.size } }
+    var orphanedClaudeBytes: Int64 { claudeItems.filter(\.status.isOrphaned).reduce(0) { $0 + $1.size } }
+    /// Claude data lies in fixed places, so it needs no search location.
     var canScan: Bool {
-        !roots.isEmpty && (includeNodeModules || includeVendor || includeDocker) && !isDeleting
+        (includeClaude || !roots.isEmpty && (includeNodeModules || includeVendor || includeDocker)) && !isDeleting
     }
 
     func isChecked(_ id: URL) -> Binding<Bool> {
@@ -174,7 +207,16 @@ final class AppModel {
         )
     }
 
-    /// Marks all visible entries of the current view; for Docker only the orphaned ones.
+    func isChecked(claude id: String) -> Binding<Bool> {
+        Binding(
+            get: { self.checkedClaude.contains(id) },
+            set: { on in
+                if on { self.checkedClaude.insert(id) } else { self.checkedClaude.remove(id) }
+            }
+        )
+    }
+
+    /// Marks all visible entries of the current view; for Docker and Claude only the orphaned ones.
     func checkAllVisible() {
         switch section {
         case .folders:
@@ -183,6 +225,8 @@ final class AppModel {
             checkedImages.formUnion(visibleImages.filter(\.status.isOrphaned).map(\.id))
         case .volumes:
             checkedVolumes.formUnion(visibleVolumes.filter(\.status.isOrphaned).map(\.id))
+        case .claude:
+            checkedClaude.formUnion(visibleClaude.filter(\.status.isOrphaned).map(\.id))
         }
     }
 
@@ -225,6 +269,8 @@ final class AppModel {
         checkedImages = []
         dockerVolumes = []
         checkedVolumes = []
+        claudeItems = []
+        checkedClaude = []
         dockerLoad += 1
         isLoadingDocker = false
         dockerError = nil
@@ -243,11 +289,15 @@ final class AppModel {
         if includeNodeModules { wanted.insert(.nodeModules) }
         if includeVendor { wanted.insert(.vendor) }
         let kinds = wanted
+        // Claude data does not depend on the search locations, so it loads alongside the scan.
+        if includeClaude { loadClaude() }
+        let walk = !kinds.isEmpty || includeDocker
 
         DispatchQueue.global(qos: .userInitiated).async { [self, sizeQueue] in
             var projects = DockerProjectIndex()
             Scanner.scan(
-                roots: roots,
+                // Without folder types or Docker there is nothing to walk for.
+                roots: walk ? roots : [],
                 kinds: kinds,
                 collectDockerProjects: includeDocker,
                 dockerProjects: &projects,
@@ -296,6 +346,32 @@ final class AppModel {
         sizeQueue.cancelAllOperations()
         isScanning = false
         pendingSizes = 0
+        claudeToken?.cancel()
+        claudeToken = nil
+        claudeLoad += 1
+        isLoadingClaude = false
+    }
+
+    /// Reloads the Claude entries (with a scan and after a deletion).
+    func loadClaude() {
+        claudeToken?.cancel()
+        let token = CancelToken()
+        claudeToken = token
+        claudeLoad += 1
+        let load = claudeLoad
+        isLoadingClaude = true
+        let desktopRunning = Claude.isDesktopRunning
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let items = Claude.load(.current(desktopRunning: desktopRunning), token: token)
+            Task { @MainActor in
+                // A newer scan or load has replaced this one.
+                guard self.claudeLoad == load else { return }
+                self.isLoadingClaude = false
+                self.claudeItems = items
+                // Only marks that are still deletable survive: Claude may have started meanwhile.
+                self.checkedClaude.formIntersection(items.filter(\.status.isDeletable).map(\.id))
+            }
+        }
     }
 
     /// Reloads images and volumes (after a scan and after a deletion).
@@ -333,13 +409,19 @@ final class AppModel {
         let folders = checkedFolders
         let images = checkedDockerImages
         let volumes = checkedDockerVolumes
-        guard !folders.isEmpty || !images.isEmpty || !volumes.isEmpty, !isScanning else { return }
+        let claude = checkedClaudeItems
+        guard !folders.isEmpty || !images.isEmpty || !volumes.isEmpty || !claude.isEmpty, !isScanning else { return }
         let mode = deleteMode
         isDeleting = true
         statusMessage = nil
+        // Checked again now: Claude Desktop may have started since the scan.
+        let claudeEnvironment = ClaudeEnvironment(
+            home: FileManager.default.homeDirectoryForCurrentUser, desktopRunning: Claude.isDesktopRunning, runningCommands: nil
+        )
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             var result = Deleter.delete(folders, mode: mode)
+            result.merge(Claude.delete(claude, mode: mode, environment: claudeEnvironment))
             result.merge(Docker.delete(images))
             result.merge(Docker.delete(volumes))
             Task { @MainActor in
@@ -348,13 +430,18 @@ final class AppModel {
                 self.checked.subtract(deleted)
                 self.checkedImages.subtract(result.deletedImages)
                 self.checkedVolumes.subtract(result.deletedVolumes)
+                self.checkedClaude.subtract(result.deletedClaude)
                 self.isDeleting = false
 
                 var parts: [String] = []
                 if !result.deleted.isEmpty {
                     parts.append(mode == .trash
-                        ? "\(result.deleted.count) Ordner in den Papierkorb gelegt (Papierkorb leeren, um den Platz freizugeben)"
+                        ? "\(result.deleted.count) Ordner in den Papierkorb gelegt"
                         : "\(result.deleted.count) Ordner gelöscht")
+                }
+                if !result.deletedClaude.isEmpty {
+                    let entries = result.deletedClaude.count == 1 ? "1 Claude-Eintrag" : "\(result.deletedClaude.count) Claude-Einträge"
+                    parts.append(mode == .trash ? "\(entries) in den Papierkorb gelegt" : "\(entries) gelöscht")
                 }
                 if !result.deletedImages.isEmpty {
                     parts.append("\(result.deletedImages.count) Docker-Einträge entfernt")
@@ -363,7 +450,11 @@ final class AppModel {
                     parts.append(result.deletedVolumes.count == 1 ? "1 Volume entfernt" : "\(result.deletedVolumes.count) Volumes entfernt")
                 }
                 if !parts.isEmpty {
-                    self.statusMessage = parts.joined(separator: ", ") + " – \(result.freedBytes.formattedBytes)."
+                    var message = parts.joined(separator: ", ") + " – \(result.freedBytes.formattedBytes)."
+                    if mode == .trash, !result.deleted.isEmpty || !result.deletedClaude.isEmpty {
+                        message += " Papierkorb leeren, um den Platz freizugeben."
+                    }
+                    self.statusMessage = message
                 }
 
                 if !result.failures.isEmpty {
@@ -373,7 +464,89 @@ final class AppModel {
                 }
                 // Shared layers may become unique once other images are gone, so reload.
                 if !result.deletedImages.isEmpty || !result.deletedVolumes.isEmpty { self.loadDocker() }
+                if !result.deletedClaude.isEmpty { self.loadClaude() }
             }
+        }
+    }
+}
+
+extension Claude {
+    @MainActor static var isDesktopRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: desktopBundleID).isEmpty
+    }
+}
+
+extension ClaudeEnvironment {
+    /// The real home folder and all running command lines. Calls ps, so off the main thread.
+    static func current(desktopRunning: Bool) -> ClaudeEnvironment {
+        let output = try? Docker.execute(URL(fileURLWithPath: "/bin/ps"), ["-axww", "-o", "command="], timeout: 20)
+        let commands = output.map { String(decoding: $0, as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init) }
+        return ClaudeEnvironment(
+            home: FileManager.default.homeDirectoryForCurrentUser, desktopRunning: desktopRunning, runningCommands: commands
+        )
+    }
+}
+
+extension ClaudeItem {
+    var statusLabel: String {
+        switch status {
+        case .inUse: "in Benutzung"
+        case .cache: "Cache"
+        case .oldLogs: "alte Logs"
+        case .oldVersion: "alte Version"
+        case .vmImage: "VM-Image"
+        case .orphanSessions: "verwaist"
+        case .oldSessions: "alt"
+        }
+    }
+
+    var statusDetail: String {
+        switch status {
+        case .inUse(.desktopRunning): "Claude läuft – erst beenden"
+        case .inUse(.running): "läuft gerade"
+        case .inUse(.current): "aktuelle Version"
+        case .inUse(.active): "gerade aktiv"
+        case .cache: "wird neu angelegt"
+        case .oldLogs: urls.count == 1 ? "1 Datei" : "\(urls.count) Dateien"
+        case .oldVersion(let current): current.map { "aktuell: \($0)" } ?? "Update-Download"
+        case .vmImage: "wird bei Bedarf neu geladen"
+        case .orphanSessions: "Projektordner fehlt"
+        case .oldSessions(let count, let days):
+            count == 1 ? "1 Verlauf älter als \(days) Tage" : "\(count) Verläufe älter als \(days) Tage"
+        }
+    }
+
+    var statusHelp: String {
+        switch status {
+        case .inUse(.desktopRunning):
+            "Claude Desktop nutzt diese Daten gerade. Claude beenden und erneut scannen."
+        case .inUse(.running):
+            "Ein laufender Claude-Prozess nutzt diese Version."
+        case .inUse(.current):
+            "Die Version, die Claude derzeit verwendet."
+        case .inUse(.active):
+            "In der letzten Stunde benutzt – bleibt unangetastet."
+        case .cache:
+            "Zwischenspeicher, den Claude beim nächsten Start neu anlegt."
+        case .oldLogs:
+            "Ältere Logdateien. Die aktuellen Logs bleiben."
+        case .oldVersion(let current):
+            current.map { "Programmversion, die Claude nicht nutzt. Aktuell ist \($0)." }
+                ?? "Übrig gebliebener Download eines Updates."
+        case .vmImage:
+            "Linux-VM für Cowork. Claude Desktop lädt sie beim nächsten Einsatz von Cowork neu herunter (mehrere GB). „Verwaiste markieren“ erfasst sie nicht."
+        case .orphanSessions:
+            "Chat-Verläufe und Memory eines Projekts, dessen Ordner \(displayLocation) nicht mehr existiert. Sie lassen sich nicht mehr fortsetzen."
+        case .oldSessions(_, let days):
+            "Verläufe, die seit über \(days) Tagen nicht benutzt wurden. Danach lassen sie sich nicht mehr fortsetzen. Memory und neuere Verläufe bleiben. „Verwaiste markieren“ erfasst sie nicht."
+        }
+    }
+
+    var statusColor: Color {
+        switch status {
+        case .inUse: Color(nsColor: Darcula.muted)
+        case .vmImage, .oldSessions: Color(nsColor: Darcula.warn)
+        case .cache, .oldLogs, .oldVersion, .orphanSessions: Color(nsColor: Darcula.success)
         }
     }
 }

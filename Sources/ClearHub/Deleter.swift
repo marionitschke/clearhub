@@ -11,6 +11,7 @@ public struct DeleteResult: Sendable {
     public var deleted: [URL] = []
     public var deletedImages: [String] = []
     public var deletedVolumes: [String] = []
+    public var deletedClaude: [String] = []
     public var freedBytes: Int64 = 0
     public var failures: [(name: String, message: String)] = []
 
@@ -20,6 +21,7 @@ public struct DeleteResult: Sendable {
         deleted += other.deleted
         deletedImages += other.deletedImages
         deletedVolumes += other.deletedVolumes
+        deletedClaude += other.deletedClaude
         freedBytes += other.freedBytes
         failures += other.failures
     }

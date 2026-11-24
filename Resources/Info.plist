@@ -33,7 +33,7 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Findet und löscht node_modules, vendor und veraltete Docker-Images.</string>
+	<string>Findet und löscht node_modules, vendor, veraltete Docker-Images und alte Claude-Daten.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>ClearHub durchsucht deine Projektordner nach node_modules und vendor.</string>
 	<key>NSDesktopFolderUsageDescription</key>

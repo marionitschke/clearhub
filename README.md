@@ -1,6 +1,6 @@
 # ClearHub
 
-A native macOS app (SwiftUI + AppKit) that searches your project folders for `node_modules/` and `vendor/`, finds outdated Docker images and orphaned Docker volumes and deletes them selectively. It gets back the disk space that old projects take up. Runs entirely locally – no Xcode, no Apple developer certificate. The interface is always dark: a Darcula look with neutral greys, ClearHub's orange marking its primary actions.
+A native macOS app (SwiftUI + AppKit) that searches your project folders for `node_modules/` and `vendor/`, finds outdated Docker images, orphaned Docker volumes and old Claude caches, versions and conversations, and deletes them selectively. It gets back the disk space that old projects take up. Runs entirely locally – no Xcode, no Apple developer certificate. The interface is always dark: a Darcula look with neutral greys, ClearHub's orange marking its primary actions.
 
 ![ClearHub volumes view (mockup)](docs/screenshot.svg)
 
@@ -28,6 +28,7 @@ The app is then located at `/Applications/StudioHub/ClearHub.app`. Because it is
 - **`vendor/`** – only real project dependencies: next to `composer.json`, `go.mod` or `Gemfile`, and only if the package manager created it (`vendor/composer/`, `vendor/modules.txt`; for Bundler nothing but `vendor/bundle/`, since a Rails app's `vendor/` also holds committed code).
 - **Docker images** – a separate view with a status per image (see below), plus unused build cache.
 - **Docker volumes** – a third view with a status per volume; orphaned volumes can be deleted.
+- **Claude** – a fourth view for Claude Desktop and Claude Code: caches, old program versions, old logs, the Cowork VM and conversations (see below). Independent of the search locations.
 - **Size and age** – sortable by size, type or **Projekt geändert** (project modified), filterable by path.
 - **Deletion** – to the Trash (default) or permanently, always after confirmation.
 - **Erneut scannen** (scan again) – the button is highlighted as soon as search locations or types have changed.
@@ -59,13 +60,30 @@ Volumes hold data such as databases – unlike images, nothing brings them back.
 
 **Verwaiste markieren** only selects anonymous and orphaned volumes. DDEV projects are also found outside the search locations via `~/.ddev/project_list.yaml`; Compose has no such list, so add the folder of a project shown as **Projekt fehlt** if you still need it. Volumes are always removed permanently.
 
+### Claude: what can go?
+
+ClearHub reads fixed locations: `~/.claude`, `~/Library/Application Support/Claude`, `~/Library/Caches/claude-cli-nodejs`, `~/Library/Caches/com.anthropic.claudefordesktop`, `~/Library/Logs/Claude` and `~/.local/share/claude/versions`.
+
+| Status | Meaning | Deletable |
+| --- | --- | --- |
+| **in Benutzung** (in use) 🔒 | The current version, a version a process runs from, something used within the last hour, or Desktop data while Claude Desktop runs | No – quit Claude and scan again |
+| **verwaist** (orphaned) | Conversations (with memory) of a project whose folder no longer exists | Yes |
+| **Cache** | Claude Desktop's browser cache, MCP logs of Claude Code – both recreated | Yes |
+| **alte Version** (old version) | A program version Claude no longer uses, or a leftover update download | Yes |
+| **alte Logs** (old logs) | Rotated logs (`main1.log` next to `main.log`), logs unused for 30 days, Claude Code debug logs older than a day | Yes |
+| **alt** (old) | Conversations of an existing project, unused for 30 days; memory and newer conversations stay | Yes, individually |
+| **VM-Image** | Cowork's Linux VM, downloaded again (several GB) the next time Cowork needs it | Yes, individually |
+
+**Verwaiste markieren** only selects orphaned conversations, caches, old versions and old logs. A conversation's project is read from the working folder in its transcript; one on an unmounted volume counts as present. Claude data follows the Trash/permanent choice. Homebrew installs (`/opt/homebrew/Caskroom/claude-code`) are left to `brew cleanup`.
+
 ### Safety
 
-- Hidden folders (`.git`, `.nvm`, `.cache` …), `~/Library` and system folders are never searched.
+- Hidden folders (`.git`, `.nvm`, `.cache` …), `~/Library` and system folders are never searched; only the fixed Claude locations above are read there.
 - Nested `node_modules` are not listed individually – only the top-level folder per project.
 - Only folders actually named `node_modules` or `vendor` are deleted, and only if they are still real folders – one replaced by a link since the scan is skipped. Links inside them are removed, never their targets.
 - Docker images are removed without `--force`; volumes in use or owned by a project are never deleted.
 - A Docker call that gets no answer (e.g. a stuck Docker Desktop) is stopped after a few minutes instead of blocking the app.
+- Claude data is deleted only inside Claude's own folders, never its settings, and Desktop data only while Claude Desktop is closed (checked again right before deleting). Links are skipped, never followed.
 
 ## Usage
 
@@ -85,7 +103,7 @@ Only the Command Line Tools are needed, no Xcode:
 ./build.sh            # build/ClearHub.app
 ./build.sh --install  # also copies it to /Applications/StudioHub (stops if ClearHub is running)
 ./build.sh --icon     # redraws the app icon (scripts/make-icon.swift → Resources/AppIcon.icns)
-scripts/check.sh      # checks scan, deletion and Docker classification in temporary folders
+scripts/check.sh      # checks scan, deletion, Docker and Claude classification in temporary folders
 ```
 
 ## Structure
@@ -95,8 +113,10 @@ scripts/check.sh      # checks scan, deletion and Docker classification in tempo
 | `Sources/ClearHub/Scanner.swift` | Directory scan, detection, size calculation |
 | `Sources/ClearHub/Deleter.swift` | Trash / permanent deletion |
 | `Sources/ClearHub/Docker.swift` | Docker CLI, image and volume status, Compose/DDEV mapping |
+| `Sources/ClearHub/Claude.swift` | Claude locations, status per entry, deletion inside Claude's folders |
 | `Sources/ClearHub/AppModel.swift` | State, background scan, settings |
 | `Sources/ClearHub/ContentView.swift` | Interface (folders) |
 | `Sources/ClearHub/DockerView.swift` | Interface (Docker) |
+| `Sources/ClearHub/ClaudeView.swift` | Interface (Claude) |
 | `Sources/ClearHub/Darcula.swift` | Darcula palette, graphite accent, dark window, primary buttons |
-| `Tests/Checks.swift` | Checks for scan, deletion and Docker classification |
+| `Tests/Checks.swift` | Checks for scan, deletion, Docker and Claude classification |

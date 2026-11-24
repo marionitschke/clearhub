@@ -27,6 +27,7 @@ enum Checks {
         deletionSafety()
         docker()
         dockerCalls()
+        claude()
         print("\(passed) Prüfungen bestanden, \(failures) fehlgeschlagen.")
         exit(failures == 0 ? 0 : 1)
     }
@@ -343,5 +344,152 @@ enum Checks {
         } catch {
             equal(error.localizedDescription, refusal, "Failure reported with its message")
         }
+    }
+
+    // MARK: Claude
+
+    /// Claude data in a fake home folder: classification, then deletion with every safety net.
+    static func claude() {
+        // Resolved, so /var and /private/var cannot differ between expected and found paths.
+        let home = temp("claude").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fm = FileManager.default
+        let file = { (path: String, bytes: Int) in write(home, path, Data(count: bytes)) }
+        let exists = { (path: String) in fm.fileExists(atPath: home.appendingPathComponent(path).path) }
+        let age = { (path: String, days: Double) in
+            try? fm.setAttributes([.modificationDate: Date().addingTimeInterval(-days * 86_400)],
+                                  ofItemAtPath: home.appendingPathComponent(path).path)
+        }
+
+        let desktop = "Library/Application Support/Claude"
+        file("\(desktop)/Cache/Cache_Data/f_000001", 5_000)
+        file("\(desktop)/Code Cache/js/index", 1_000)
+        file("\(desktop)/config.json", 10)
+        file("\(desktop)/claude-code/2.1.328/abc/claude.app/Contents/MacOS/claude", 3_000)
+        file("\(desktop)/claude-code/2.1.330/abc/claude.app/Contents/MacOS/claude", 3_000)
+        file("\(desktop)/claude-code/2.1.99/abc/claude.app/Contents/MacOS/claude", 3_000)   // older, but running
+        file("\(desktop)/vm_bundles/claudevm.bundle/rootfs.img", 20_000)
+        file("Library/Logs/Claude/main.log", 100)
+        file("Library/Logs/Claude/main1.log", 100)
+        file("Library/Logs/Claude/mcp-server-x2.log", 100)   // current log of a server named "x2"
+        file("Library/Logs/Claude/mcp-server-gone.log", 100)
+        age("Library/Logs/Claude/mcp-server-gone.log", 45)
+        file("Library/Caches/claude-cli-nodejs/-Users-x-shop/mcp-logs-figma/1.jsonl", 100)
+        file(".claude/settings.json", 10)
+        file(".claude/downloads/claude-2.1.114-darwin-arm64", 4_000)
+        age(".claude/downloads/claude-2.1.114-darwin-arm64", 2)
+        file(".local/share/claude/versions/2.2.0", 2_000)
+        file(".local/share/claude/versions/2.2.1", 2_000)
+        file(".local/share/claude/versions/2.3.0", 2_000)   // newest, but the launcher still points to 2.2.1
+        try? fm.createDirectory(at: home.appendingPathComponent(".local/bin"), withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(at: home.appendingPathComponent(".local/bin/claude"),
+                                   withDestinationURL: home.appendingPathComponent(".local/share/claude/versions/2.2.1"))
+
+        // Conversations: one project gone, one existing (with quotes in its name) holding an old and a new one.
+        let gone = home.appendingPathComponent("Projects/gone").path
+        let shop = home.appendingPathComponent("Projects/shop \"2026\"")
+        try? fm.createDirectory(at: shop, withIntermediateDirectories: true)
+        let transcript = { (cwd: String) -> Data in
+            let literal = String(decoding: (try? JSONEncoder().encode(cwd)) ?? Data(), as: UTF8.self)
+            return Data("{\"type\":\"queue-operation\",\"content\":\"say \\\"cwd\\\":\\\"/nope\\\"\"}\n{\"type\":\"user\",\"cwd\":\(literal)}\n".utf8)
+        }
+        let goneID = "33333333-3333-3333-3333-333333333333"
+        let oldID = "11111111-1111-1111-1111-111111111111"
+        let newID = "22222222-2222-2222-2222-222222222222"
+        write(home, ".claude/projects/-gone/\(goneID).jsonl", transcript(gone))
+        age(".claude/projects/-gone/\(goneID).jsonl", 3)
+        file(".claude/projects/-gone/memory/MEMORY.md", 10)
+        file(".claude/session-env/\(goneID)/env", 10)
+        write(home, ".claude/projects/-shop/\(oldID).jsonl", transcript(shop.path))
+        age(".claude/projects/-shop/\(oldID).jsonl", 40)
+        file(".claude/projects/-shop/\(oldID)/subagents/a.jsonl", 10)
+        file(".claude/projects/-shop/\(oldID).desktop-released.json", 10)
+        file(".claude/file-history/\(oldID)/backup", 10)
+        write(home, ".claude/projects/-shop/\(newID).jsonl", transcript(shop.path))
+        file(".claude/file-history/\(newID)/backup", 10)
+        file(".claude/projects/-shop/memory/MEMORY.md", 10)
+
+        equal(Claude.sessionDirectory(ofTranscript: home.appendingPathComponent(".claude/projects/-shop/\(oldID).jsonl")),
+              shop.path, "Working folder read from the transcript (escaped, not from message text)")
+        equal(Claude.versionNumbers("2.1.330"), [2, 1, 330], "Version number")
+        equal([Claude.versionNumbers("latest"), Claude.versionNumbers("2"), Claude.versionNumbers("2.x")], [nil, nil, nil], "No version")
+
+        let running = home.appendingPathComponent("\(desktop)/claude-code/2.1.99/abc/claude.app/Contents/MacOS/claude").path
+        var env = ClaudeEnvironment(home: home, desktopRunning: true, runningCommands: ["\(running) --output-format stream-json"])
+        let items = Claude.load(env, token: CancelToken())
+        let byName = Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        let status = { (name: String) in byName[name]?.status }
+
+        equal(status("Browser-Cache"), .inUse(.desktopRunning), "Browser cache locked while Claude Desktop runs")
+        equal(byName["Browser-Cache"]?.urls.map(\.lastPathComponent).sorted(), ["Cache", "Code Cache"], "Only cache folders, no settings")
+        equal(status("Cowork-VM"), .inUse(.desktopRunning), "VM locked while Claude Desktop runs")
+        equal(status("Claude Code 2.1.330"), .inUse(.current), "Newest Desktop version is current")
+        equal(status("Claude Code 2.1.328"), .oldVersion(current: "2.1.330"), "Older Desktop version")
+        equal(status("Claude Code 2.1.99"), .inUse(.running), "Version a process runs from")
+        let native = items.filter { $0.app == .code && $0.name.hasPrefix("Claude Code") }
+        equal(Dictionary(native.map { ($0.name, $0.status) }, uniquingKeysWith: { first, _ in first }), [
+            "Claude Code 2.2.0": .oldVersion(current: "2.2.1"),
+            "Claude Code 2.2.1": .inUse(.current),
+            "Claude Code 2.3.0": .oldVersion(current: "2.2.1"),
+        ], "Native versions: the launcher decides which is current")
+        equal(status("claude-2.1.114-darwin-arm64"), .oldVersion(current: nil), "Leftover update download")
+        equal(byName["Alte Logs"]?.urls.map(\.lastPathComponent).sorted(), ["main1.log", "mcp-server-gone.log"],
+              "Rotated and long unused logs, not current ones")
+        equal(status("MCP-Logs"), .cache, "MCP logs")
+        equal(status("gone"), .orphanSessions, "Conversations of a missing project")
+        equal(status("shop \"2026\""), .oldSessions(count: 1, days: 30), "Old conversations of an existing project")
+        equal(byName["shop \"2026\""]?.urls.map(\.lastPathComponent).sorted(),
+              [oldID, oldID, "\(oldID).desktop-released.json", "\(oldID).jsonl"], "Old conversation with its folders, nothing else")
+        equal(items.filter(\.status.isOrphaned).map(\.name).sorted(),
+              ["Alte Logs", "Claude Code 2.1.328", "Claude Code 2.2.0", "Claude Code 2.3.0", "MCP-Logs", "claude-2.1.114-darwin-arm64", "gone"],
+              "Mark orphaned skips the VM, existing projects and locked entries")
+
+        env.runningCommands = nil
+        let unknown = Claude.load(env, token: CancelToken()).first { $0.name == "Claude Code 2.1.328" }?.status
+        equal(unknown, .inUse(.running), "Unknown process list locks older versions")
+
+        // Deletion while Claude Desktop runs: locked entries are not even tried.
+        let deletion = Claude.delete(items, mode: .permanent, environment: env)
+        check(deletion.failures.isEmpty, "No deletion failures", "\(deletion.failures)")
+        equal(deletion.deletedClaude.count, items.filter(\.status.isDeletable).count, "Every deletable entry deleted")
+        check(exists("\(desktop)/Cache") && exists("\(desktop)/vm_bundles/claudevm.bundle"), "Locked Desktop data stays")
+        check(exists("\(desktop)/claude-code/2.1.330") && exists("\(desktop)/claude-code/2.1.99")
+              && exists(".local/share/claude/versions/2.2.1"), "Current and running versions stay")
+        check(!exists("\(desktop)/claude-code/2.1.328") && !exists(".local/share/claude/versions/2.2.0"), "Old versions are gone")
+        check(exists("Library/Logs/Claude/main.log") && exists("Library/Logs/Claude/mcp-server-x2.log")
+              && !exists("Library/Logs/Claude/main1.log"), "Only old logs are gone")
+        check(!exists(".claude/projects/-gone") && !exists(".claude/session-env/\(goneID)"), "Missing project's conversations are gone")
+        check(!exists(".claude/projects/-shop/\(oldID).jsonl") && !exists(".claude/projects/-shop/\(oldID)")
+              && !exists(".claude/file-history/\(oldID)"), "Old conversation is gone")
+        check(exists(".claude/projects/-shop/\(newID).jsonl") && exists(".claude/file-history/\(newID)")
+              && exists(".claude/projects/-shop/memory/MEMORY.md"), "New conversation and memory stay")
+        check(exists("\(desktop)/config.json") && exists(".claude/settings.json") && fm.fileExists(atPath: shop.path),
+              "Settings and project folders stay")
+
+        env.desktopRunning = false
+        let cache = Claude.load(env, token: CancelToken()).filter { $0.name == "Browser-Cache" }
+        equal(cache.map(\.status), [.cache], "Browser cache deletable once Claude Desktop is closed")
+        // Claude Desktop started again between scan and deletion.
+        var restarted = env
+        restarted.desktopRunning = true
+        let refusedCache = Claude.delete(cache, mode: .permanent, environment: restarted)
+        check(refusedCache.deletedClaude.isEmpty && refusedCache.failures.count == 1 && exists("\(desktop)/Cache"),
+              "Desktop data refused once Claude Desktop runs again")
+        let cacheDeletion = Claude.delete(cache, mode: .permanent, environment: env)
+        check(cacheDeletion.failures.isEmpty && !exists("\(desktop)/Cache") && exists("\(desktop)/config.json"), "Browser cache is gone")
+
+        // Safety net: nothing outside Claude's folders, no Claude settings, never through a link.
+        let outside = home.appendingPathComponent("Projects/keep")
+        write(home, "Projects/keep/file.txt", Data("keep".utf8))
+        let link = home.appendingPathComponent("Library/Caches/claude-cli-nodejs/link")
+        try? fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        let forged = [outside, home.appendingPathComponent(".claude/settings.json"),
+                      home.appendingPathComponent(".claude/projects/../settings.json"), link].map {
+            ClaudeItem(id: $0.path, name: $0.lastPathComponent, app: .code, location: "", urls: [$0], size: 1, modified: nil, status: .cache)
+        }
+        let refused = Claude.delete(forged, mode: .permanent, environment: env)
+        check(refused.deletedClaude.isEmpty && refused.failures.count == 4, "Forged entries are refused", "\(refused.failures)")
+        check(exists("Projects/keep/file.txt") && exists(".claude/settings.json") && (try? fm.destinationOfSymbolicLink(atPath: link.path)) != nil,
+              "Targets, settings and the link itself stay")
     }
 }

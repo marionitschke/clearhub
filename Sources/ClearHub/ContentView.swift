@@ -21,6 +21,7 @@ struct ContentView: View {
                     (Section.folders, "Ordner (\(model.results.count))"),
                     (Section.docker, "Images (\(model.dockerImages.count))"),
                     (Section.volumes, "Volumes (\(model.dockerVolumes.count))"),
+                    (Section.claude, "Claude (\(model.claudeItems.count))"),
                 ], selection: $model.section)
                 .fixedSize()
                 .accessibilityLabel("Ansicht")
@@ -52,6 +53,7 @@ struct ContentView: View {
         case .folders: "Pfad filtern"
         case .docker: "Image filtern"
         case .volumes: "Volume filtern"
+        case .claude: "Claude-Daten filtern"
         }
     }
 
@@ -61,6 +63,9 @@ struct ContentView: View {
         if !model.checkedImages.isEmpty { parts.append("\(model.checkedImages.count) Docker-Einträge") }
         if !model.checkedVolumes.isEmpty {
             parts.append(model.checkedVolumes.count == 1 ? "1 Volume" : "\(model.checkedVolumes.count) Volumes")
+        }
+        if !model.checkedClaude.isEmpty {
+            parts.append(model.checkedClaude.count == 1 ? "1 Claude-Eintrag" : "\(model.checkedClaude.count) Claude-Einträge")
         }
         let list = parts.count > 1 ? parts.dropLast().joined(separator: ", ") + " und " + parts[parts.count - 1] : parts.joined()
         return list + " löschen?"
@@ -82,6 +87,24 @@ struct ContentView: View {
         }
         if !model.checkedVolumes.isEmpty {
             lines.append("⚠️ Volumes enthalten Daten (z. B. Datenbanken). Sie werden endgültig gelöscht und lassen sich nicht wiederherstellen.")
+        }
+        if !model.checkedClaude.isEmpty {
+            lines.append(model.deleteMode == .trash
+                ? "Claude-Daten kommen in den Papierkorb."
+                : "Claude-Daten werden sofort und unwiderruflich gelöscht.")
+            let items = model.checkedClaudeItems
+            if items.contains(where: { $0.status == .vmImage }) {
+                lines.append("⚠️ Die Cowork-VM wird beim nächsten Einsatz von Cowork neu heruntergeladen (mehrere GB).")
+            }
+            let sessions = items.filter {
+                switch $0.status {
+                case .orphanSessions, .oldSessions: true
+                default: false
+                }
+            }
+            if !sessions.isEmpty {
+                lines.append("⚠️ Chat-Verläufe aus \(sessions.count == 1 ? "1 Projekt" : "\(sessions.count) Projekten") lassen sich danach nicht mehr fortsetzen.")
+            }
         }
         return lines.joined(separator: "\n")
     }
@@ -119,6 +142,8 @@ private struct ScanSettingsBar: View {
                         .help("Nur vendor/-Ordner neben composer.json, go.mod oder Gemfile.")
                     Toggle("Docker", isOn: $model.includeDocker)
                         .help("Images, Volumes und Build-Cache prüfen. Compose- und DDEV-Projekte in den Suchorten werden zugeordnet.")
+                    Toggle("Claude", isOn: $model.includeClaude)
+                        .help("Caches, alte Versionen, Logs und Chat-Verläufe von Claude Desktop und Claude Code prüfen – unabhängig von den Suchorten.")
                 }
                 .toggleStyle(.checkbox)
                 .disabled(model.isScanning)
@@ -195,6 +220,12 @@ private struct ScanStatus: View {
                 Text("Docker wird abgefragt …")
                     .foregroundStyle(.secondary)
             }
+        } else if model.isLoadingClaude {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Claude-Daten werden geprüft …")
+                    .foregroundStyle(.secondary)
+            }
         } else if model.pendingSizes > 0 {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -215,6 +246,7 @@ private struct ResultsArea: View {
         case .folders: FolderResultsArea()
         case .docker: DockerResultsArea()
         case .volumes: DockerVolumesArea()
+        case .claude: ClaudeArea()
         }
     }
 }
@@ -374,6 +406,8 @@ private struct FooterBar: View {
                         Text("\(model.dockerImages.count) Docker-Einträge · \(model.orphanedBytes.formattedBytes) verwaist")
                     case .volumes:
                         Text("\(model.dockerVolumes.count) Volumes · \(model.orphanedVolumeBytes.formattedBytes) verwaist")
+                    case .claude:
+                        Text("\(model.claudeItems.count) Claude-Einträge · \(model.orphanedClaudeBytes.formattedBytes) verwaist")
                     }
                 } else {
                     Text("\(model.checkedCount) ausgewählt · \(model.checkedBytes.formattedBytes)")
@@ -401,12 +435,17 @@ private struct FooterBar: View {
                 Button("Verwaiste markieren") { model.checkAllVisible() }
                     .disabled(!model.visibleVolumes.contains { $0.status.isOrphaned })
                     .help("Markiert anonyme und verwaiste Volumes ohne Container – keine Projekt- oder Werkzeug-Volumes.")
+            case .claude:
+                Button("Verwaiste markieren") { model.checkAllVisible() }
+                    .disabled(!model.visibleClaude.contains { $0.status.isOrphaned })
+                    .help("Markiert Caches, alte Logs, alte Versionen und Verläufe gelöschter Projekte – nicht die Cowork-VM und keine Verläufe bestehender Projekte.")
             }
 
             Button("Keine") {
                 model.checked.removeAll()
                 model.checkedImages.removeAll()
                 model.checkedVolumes.removeAll()
+                model.checkedClaude.removeAll()
             }
             .disabled(model.checkedCount == 0)
 
@@ -416,7 +455,7 @@ private struct FooterBar: View {
             }
             .labelsHidden()
             .fixedSize()
-            .help("Gilt für Ordner. Docker-Images und -Volumes werden immer endgültig entfernt.")
+            .help("Gilt für Ordner und Claude-Daten. Docker-Images und -Volumes werden immer endgültig entfernt.")
 
             Button(role: .destructive) {
                 confirmDelete = true
